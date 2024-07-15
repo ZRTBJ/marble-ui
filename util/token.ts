@@ -1,0 +1,525 @@
+import BN from 'bn.js';
+import { Near, keyStores, utils, WalletConnection } from 'near-api-js';
+import * as math from 'mathjs';
+import * as nearAPI from 'near-api-js'
+import {
+  ONE_YOCTO_NEAR,
+  refFiFunctionCall,
+  RefFiFunctionCallOptions,
+  refFiManyFunctionCalls,
+  refFiViewFunction,
+  Transaction,
+  CONTRACT_NAME,
+  executeMultipleTransactions,
+} from './near';
+import { ftGetStorageBalance, TokenMetadata } from './ft-contract';
+import { ACCOUNT_MIN_STORAGE_AMOUNT, currentStorageBalance } from './account';
+import { toNonDivisibleNumber, ONLY_ZEROS } from './numbers';
+import SpecialWallet from './SpecialWallet';
+import {
+  MIN_DEPOSIT_PER_TOKEN,
+  STORAGE_TO_REGISTER_WITH_FT,
+  storageDepositAction,
+  storageDepositForFTAction,
+  needDepositStorage,
+  STORAGE_PER_TOKEN,
+  ONE_MORE_DEPOSIT_AMOUNT,
+} from './creators/storage';
+import { unwrapNear, WRAP_NEAR_CONTRACT_ID } from './wrap-near';
+import { registerTokenAction } from './creators/token';
+import { getUserWalletTokens } from './api';
+import { extraStableTokenIds } from './near';
+import {
+  getCurrentWallet,
+  WALLET_TYPE,
+  senderWallet,
+} from './sender-wallet';
+
+const specialToken = 'pixeltoken.near';
+
+export const toRealSymbol = (symbol: string) => {
+  const blackList = ['nUSDO'];
+
+  if (symbol === 'nWETH' || symbol === 'WETH') return 'wETH';
+  if (blackList.includes(symbol)) return symbol;
+  return symbol.charAt(0) === 'n' &&
+    symbol.charAt(1) === symbol.charAt(1).toUpperCase()
+    ? symbol.substring(1)
+    : symbol;
+};
+
+export const getMftTokenId = (id: string) => {
+  return ':' + id;
+};
+
+export const checkTokenNeedsStorageDeposit = async () => {
+  let storageNeeded: math.MathType = 0;
+  const { wallet } = getCurrentWallet()
+
+  const accountId = localStorage.getItem("accountId")
+  const needDeposit = await needDepositStorage(accountId);
+  if (needDeposit) {
+    storageNeeded = Number(ONE_MORE_DEPOSIT_AMOUNT);
+  } else {
+
+    const balance = await Promise.resolve(
+      currentStorageBalance(accountId)
+    );
+
+    if (!balance) {
+      storageNeeded = math.add(
+        storageNeeded,
+        Number(ACCOUNT_MIN_STORAGE_AMOUNT)
+      );
+    }
+
+    if (new BN(balance?.available || '0').lt(MIN_DEPOSIT_PER_TOKEN)) {
+      storageNeeded = math.add(storageNeeded, Number(STORAGE_PER_TOKEN));
+    }
+  }
+
+  return storageNeeded ? storageNeeded.toString() : '';
+};
+
+export const registerTokenAndExchange = async (tokenId: string) => {
+  const transactions: Transaction[] = [];
+  const actions: RefFiFunctionCallOptions[] = [
+    {
+      methodName: 'register_tokens',
+      args: { token_ids: [tokenId] },
+      amount: ONE_YOCTO_NEAR,
+    },
+  ];
+
+  const neededStorage = await checkTokenNeedsStorageDeposit();
+
+  if (neededStorage) {
+    actions.unshift(storageDepositAction({ amount: neededStorage }));
+  }
+
+  transactions.push({
+    receiverId: CONTRACT_NAME,
+    functionCalls: actions,
+  });
+
+  const exchangeBalanceAtFt = await ftGetStorageBalance(
+    tokenId,
+    CONTRACT_NAME
+  );
+  if (!exchangeBalanceAtFt) {
+    transactions.push({
+      receiverId: tokenId,
+      functionCalls: [storageDepositForFTAction()],
+    });
+  }
+
+  return executeMultipleTransactions(transactions);
+};
+
+export const registerToken = async (tokenId: string) => {
+  const registered = await ftGetStorageBalance(
+    tokenId,
+    CONTRACT_NAME
+  ).catch(() => {
+    throw new Error(`${tokenId} doesn't exist.`);
+  });
+  if (!registered) throw new Error('No liquidity pools available for token');
+
+  const actions: RefFiFunctionCallOptions[] = [registerTokenAction(tokenId)];
+
+  const neededStorage = await checkTokenNeedsStorageDeposit();
+  if (neededStorage) {
+    actions.unshift(storageDepositAction({ amount: neededStorage }));
+  }
+
+  return refFiManyFunctionCalls(actions);
+};
+
+export const unregisterToken = async (tokenId: string) => {
+  const actions: RefFiFunctionCallOptions[] = [
+    {
+      methodName: 'unregister_tokens',
+      args: { token_ids: [tokenId] },
+      amount: ONE_YOCTO_NEAR,
+    },
+  ];
+
+  const neededStorage = await checkTokenNeedsStorageDeposit();
+
+  if (neededStorage) {
+    actions.unshift(storageDepositAction({ amount: neededStorage }));
+  }
+
+  return refFiManyFunctionCalls(actions);
+};
+
+interface DepositOptions {
+  token: TokenMetadata;
+  amount: string;
+  msg?: string;
+}
+
+export const getDepositTransactions = async ({
+  tokens,
+  amounts,
+  msgs,
+}: {
+  tokens: TokenMetadata[];
+  amounts: string[];
+  msgs?: string[];
+}) => {
+  const whitelist = await getWhitelistedTokens();
+  const transactions: Transaction[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    if (ONLY_ZEROS.test(amounts[i])) continue;
+    const token = tokens[i];
+    const gasFee =
+      token.id === specialToken ? '150000000000000' : '100000000000000';
+    transactions.unshift({
+      receiverId: token.id,
+      functionCalls: [
+        {
+          methodName: 'ft_transfer_call',
+          args: {
+            receiver_id: CONTRACT_NAME,
+            amount: toNonDivisibleNumber(token.decimals, amounts[i]),
+            msg: msgs?.[i] || '',
+          },
+          amount: ONE_YOCTO_NEAR,
+          gas: gasFee,
+        },
+      ],
+    });
+
+    const exchangeBalanceAtFt = await ftGetStorageBalance(
+      token.id,
+      CONTRACT_NAME
+    );
+
+    if (!exchangeBalanceAtFt) {
+      transactions.unshift({
+        receiverId: token.id,
+        functionCalls: [
+          {
+            methodName: 'storage_deposit',
+            args: {
+              account_id: CONTRACT_NAME,
+              registration_only: true,
+            },
+            amount: STORAGE_TO_REGISTER_WITH_FT,
+            gas: '30000000000000',
+          },
+        ],
+      });
+    }
+
+    if (!whitelist.includes(token.id)) {
+      transactions.unshift({
+        receiverId: CONTRACT_NAME,
+        functionCalls: [registerTokenAction(token.id)],
+      });
+    }
+  }
+
+  const neededStorage = await checkTokenNeedsStorageDeposit();
+
+  if (neededStorage) {
+    transactions.unshift({
+      receiverId: CONTRACT_NAME,
+      functionCalls: [storageDepositAction({ amount: neededStorage })],
+    });
+  }
+
+  return transactions;
+};
+
+export const deposit = async ({ token, amount, msg = '' }: DepositOptions) => {
+  const gasFee =
+    token.id === specialToken ? '150000000000000' : '100000000000000';
+
+  const transactions: Transaction[] = [];
+
+  transactions.unshift({
+    receiverId: token.id,
+    functionCalls: [
+      {
+        methodName: 'ft_transfer_call',
+        args: {
+          receiver_id: CONTRACT_NAME,
+          amount: toNonDivisibleNumber(token.decimals, amount),
+          msg,
+        },
+        amount: ONE_YOCTO_NEAR,
+        gas: gasFee,
+      },
+    ],
+  });
+
+  const exchangeBalanceAtFt = await ftGetStorageBalance(
+    token.id,
+    CONTRACT_NAME
+  );
+
+  if (!exchangeBalanceAtFt) {
+    transactions.unshift({
+      receiverId: token.id,
+      functionCalls: [
+        {
+          methodName: 'storage_deposit',
+          args: {
+            account_id: CONTRACT_NAME,
+            registration_only: true,
+          },
+          amount: STORAGE_TO_REGISTER_WITH_FT,
+          gas: '30000000000000',
+        },
+      ],
+    });
+  }
+
+  const whitelist = await getWhitelistedTokens();
+  if (!whitelist.includes(token.id)) {
+    transactions.unshift({
+      receiverId: CONTRACT_NAME,
+      functionCalls: [registerTokenAction(token.id)],
+    });
+  }
+
+  const neededStorage = await checkTokenNeedsStorageDeposit();
+  if (neededStorage) {
+    transactions.unshift({
+      receiverId: CONTRACT_NAME,
+      functionCalls: [storageDepositAction({ amount: neededStorage })],
+    });
+  }
+
+  return executeMultipleTransactions(transactions);
+};
+
+interface WithdrawOptions {
+  token: TokenMetadata;
+  amount: string;
+  unregister?: boolean;
+}
+
+export const withdraw = async ({
+  token,
+  amount,
+  unregister = false,
+}: WithdrawOptions) => {
+  if (token.id === WRAP_NEAR_CONTRACT_ID) {
+    return unwrapNear(amount);
+  }
+
+  const transactions: Transaction[] = [];
+  const parsedAmount = toNonDivisibleNumber(token.decimals, amount);
+  const ftBalance = await ftGetStorageBalance(token.id, getCurrentWallet().wallet.getAccountId());
+
+  transactions.unshift({
+    receiverId: CONTRACT_NAME,
+    functionCalls: [
+      {
+        methodName: 'withdraw',
+        args: { token_id: token.id, amount: parsedAmount, unregister },
+        gas: '100000000000000',
+        amount: ONE_YOCTO_NEAR,
+      },
+    ],
+  });
+
+  if (ftBalance === null) {
+    transactions.unshift({
+      receiverId: token.id,
+      functionCalls: [
+        storageDepositAction({
+          registrationOnly: true,
+          amount: STORAGE_TO_REGISTER_WITH_FT,
+        }),
+      ],
+    });
+  }
+
+  const neededStorage = await checkTokenNeedsStorageDeposit();
+  if (neededStorage) {
+    transactions.unshift({
+      receiverId: CONTRACT_NAME,
+      functionCalls: [storageDepositAction({ amount: neededStorage })],
+    });
+  }
+
+  return executeMultipleTransactions(transactions);
+};
+
+export const batchWithdraw = async (tokenMap: any) => {
+  const transactions: Transaction[] = [];
+  const neededStorage = await checkTokenNeedsStorageDeposit();
+  if (neededStorage) {
+    transactions.push({
+      receiverId: CONTRACT_NAME,
+      functionCalls: [storageDepositAction({ amount: neededStorage })],
+    });
+  }
+  const tokenIdList = Object.keys(tokenMap);
+  const ftBalancePromiseList: any[] = [];
+  tokenIdList.forEach(async (tokenId) => {
+    const promise = ftGetStorageBalance(tokenId, getCurrentWallet().wallet.getAccountId());
+    ftBalancePromiseList.push(promise);
+  });
+  const ftBalanceList = await Promise.all(ftBalancePromiseList);
+  ftBalanceList.forEach((ftBalance, index) => {
+    if (!ftBalance) {
+      transactions.push({
+        receiverId: tokenIdList[index],
+        functionCalls: [
+          storageDepositAction({
+            registrationOnly: true,
+            amount: STORAGE_TO_REGISTER_WITH_FT,
+          }),
+        ],
+      });
+    }
+  });
+
+  const widthdrawActions: any[] = [];
+  let wNEARAction;
+  tokenIdList.forEach((tokenId) => {
+    const { decimals, amount } = tokenMap[tokenId];
+    const parsedAmount = toNonDivisibleNumber(decimals, amount);
+    widthdrawActions.push({
+      methodName: 'withdraw',
+      args: { token_id: tokenId, amount: parsedAmount, unregister: false },
+      gas: '55000000000000',
+      amount: ONE_YOCTO_NEAR,
+    });
+    if (tokenId === WRAP_NEAR_CONTRACT_ID) {
+      wNEARAction = {
+        receiverId: WRAP_NEAR_CONTRACT_ID,
+        functionCalls: [
+          {
+            methodName: 'near_withdraw',
+            args: {
+              amount: parsedAmount,
+            },
+            amount: ONE_YOCTO_NEAR,
+          },
+        ],
+      };
+    }
+  });
+  transactions.push({
+    receiverId: CONTRACT_NAME,
+    functionCalls: widthdrawActions,
+  });
+  if (wNEARAction) {
+    transactions.push(wNEARAction);
+  }
+  return executeMultipleTransactions(transactions);
+};
+
+export interface TokenBalancesView {
+  [tokenId: string]: string;
+}
+
+export const getTokenBalances = (): Promise<TokenBalancesView> => {
+  return refFiViewFunction({
+    methodName: 'get_deposits',
+    args: { account_id: getCurrentWallet().wallet.getAccountId() },
+  });
+};
+
+export const getTokenBalance = (tokenId: string): Promise<number> => {
+  return refFiViewFunction({
+    methodName: 'get_deposit',
+    args: {
+      account_id: getCurrentWallet().wallet.getAccountId(),
+      token_id: tokenId,
+    },
+  });
+};
+
+export const getUserRegisteredTokens = (
+  accountId: string = getCurrentWallet().wallet.getAccountId()
+): Promise<string[]> => {
+  return refFiViewFunction({
+    methodName: 'get_user_whitelisted_tokens',
+    args: { account_id: accountId },
+  });
+};
+
+export const getWhitelistedTokens = async (): Promise<string[]> => {
+  let userWhitelist = [];
+  const globalWhitelist = await refFiViewFunction({
+    methodName: 'get_whitelisted_tokens',
+  });
+
+  const { keyStores } = nearAPI;
+  const keyStore = new keyStores.BrowserLocalStorageKeyStore()
+  const config = {
+    networkId: process.env.NODE_URL,
+    keyStore: keyStore,
+    headers: {},
+    nodeUrl: "https://rpc.testnet.near.org",
+    walletUrl: "https://wallet.testnet.near.org",
+    helperUrl: "https://helper.testnet.near.org",
+    explorerUrl: "https://explorer.testnet.near.org",
+  };
+  const near = new Near({
+    keyStore,
+    headers: {},
+    ...config,
+  });
+
+  // create wallet connection
+  const wallet = new SpecialWallet(near, CONTRACT_NAME);
+
+  if (wallet.isSignedIn()) {
+    userWhitelist = await refFiViewFunction({
+      methodName: 'get_user_whitelisted_tokens',
+      args: { account_id: wallet.getAccountId() },
+    });
+  }
+
+  return [
+    // @ts-ignore
+    ...new Set<string>([
+      ...globalWhitelist,
+      ...userWhitelist,
+      ...extraStableTokenIds,
+    ]),
+  ];
+};
+
+export const getWhitelistedTokensAndNearTokens = async (): Promise<
+  string[]
+> => {
+  const requestAll = [];
+  const request1 = refFiViewFunction({
+    methodName: 'get_whitelisted_tokens',
+  });
+  requestAll.push(request1);
+  if (getCurrentWallet().wallet.isSignedIn()) {
+    const request2 = refFiViewFunction({
+      methodName: 'get_user_whitelisted_tokens',
+      args: { account_id: getCurrentWallet().wallet.getAccountId() },
+    });
+    const request3 = getUserWalletTokens();
+    requestAll.push(request2, request3);
+  }
+  const [globalWhitelist = [], userWhitelist = [], walletTokens = []] =
+    await Promise.all(requestAll);
+
+  return [
+    // @ts-ignore
+    ...new Set<string>([...globalWhitelist, ...userWhitelist, ...walletTokens]),
+  ];
+};
+
+export const round = (decimals: number, minAmountOut: string) => {
+  return Number.isInteger(Number(minAmountOut))
+    ? minAmountOut
+    : Math.ceil(
+      Math.round(Number(minAmountOut) * Math.pow(10, decimals)) /
+      Math.pow(10, decimals)
+    ).toString();
+};

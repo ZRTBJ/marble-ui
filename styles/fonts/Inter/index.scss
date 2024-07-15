@@ -1,0 +1,42 @@
+$InterPath: "./font" !default;
+$InterVersion: "3.19" !default;
+
+@mixin fontdef($FontType: "Regular") {
+  src: url("#{$InterPath}/TrajanSansPro-#{$FontType}.otf?v=#{$InterVersion}") format("opentype"),
+  url("#{$InterPath}/TrajanSansPro-#{$FontType}.otf?v=#{$InterVersion}") format("opentype");
+}
+
+@font-face {
+  font-family: "Trajan";
+  @include fontdef("Black");
+  font-weight: 700;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Trajan";
+  @include fontdef("Bold");
+  font-weight: 600;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Trajan";
+  @include fontdef("Semibold");
+  font-weight: 500;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Trajan";
+  @include fontdef("Regular");
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Trajan";
+  @include fontdef("Light");
+  font-weight: 300;
+  font-style: normal;
+}

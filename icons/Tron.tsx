@@ -1,0 +1,38 @@
+import { SVGProps } from 'react'
+
+export const Tron = (props: SVGProps<SVGSVGElement>) => {
+  return (
+    <svg
+      width="28"
+      height="28"
+      viewBox="0 0 28 28"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M3.03339 4.2L10.8501 23.8C11.3167 24.85 12.1334 24.9667 12.8334 24.0333L23.8001 10.15C24.1501 9.68333 24.1501 8.98333 23.6834 8.63333L20.0667 5.01667C19.9501 4.78333 19.6001 4.66667 19.4834 4.66667L4.31673 2.68333C3.26673 2.45 2.68339 3.15 3.03339 4.2Z"
+        stroke="#292D32"
+        strokeWidth="1.5"
+        strokeMiterlimit="10"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M11.6667 24.5L12.8333 11.6667L3.5 3.38333"
+        stroke="#292D32"
+        strokeWidth="1.5"
+        strokeMiterlimit="10"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M19.833 4.66667L12.833 11.6667L23.333 9.56667"
+        stroke="#292D32"
+        strokeWidth="1.5"
+        strokeMiterlimit="10"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}

@@ -1,0 +1,18 @@
+{
+  "tokens": [
+    {
+      "id": "hera",
+      "name": "HERA",
+      "symbol": "HERA",
+      "chain_id": "cosmoshub-4",
+      "rpc": "https://cosmoshub.validator.network:443",
+      "denom": "uatom",
+      "decimals": 6,
+      "token_address": "hera.cmdev0.testnet",
+      "channel": "channel-207",
+      "juno_channel": "channel-1",
+      "juno_denom": "ibc/C4CFF46FD6DE35CA4CF4CE031E643C8FDC9BA4B99AE598E9B0ED98FE3A2319F9",
+      "logoURI": "https://raw.githubusercontent.com/osmosis-labs/assetlists/main/images/atom.png"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "categories":[
+    {
+      "id": 0,
+      "name": "All",
+      "slug": "all"
+    },
+    {
+      "id": 1,
+      "name": "Digital",
+      "slug": "digital"
+    },
+    {
+      "id": 2,
+      "name": "Physical",
+      "slug": "physical"
+    },
+    {
+      "id": 3,
+      "name": "Music",
+      "slug": "music"
+    },
+    {
+      "id": 4,
+      "name": "Painting",
+      "slug": "Painting"
+    },
+    {
+      "id": 5,
+      "name": "Videos",
+      "slug": "videos"
+    },
+    {
+      "id": 6,
+      "name": "Photography",
+      "slug": "photography"
+    },
+    {
+      "id": 7,
+      "name": "Sports",
+      "slug": "sports"
+    },
+    {
+      "id": 8,
+      "name": "Utility",
+      "slug": "utility"
+    }
+  ]
+}
